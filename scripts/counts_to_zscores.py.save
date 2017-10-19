@@ -33,51 +33,129 @@ sys.path.append(os.path.join(barseq_path, 'lib/python2.7/site-packages'))
 from mlabwrap import mlab
 
 
-def git_lowess(x, y, f=2. / 3., iter=3):
-    """lowess(x, y, f=2./3., iter=3) -> yest
-    Lowess smoother: Robust locally weighted regression.
-    The lowess function fits a nonparametric regression curve to a scatterplot.
-    The arrays x and y contain an equal number of elements; each pair
-    (x[i], y[i]) defines a data point in the scatterplot. The function returns
-    the estimated (smooth) values of y.
-    The smoothing span is given by f. A larger value for f will result in a
-    smoother curve. The number of robustifying iterations is given by iter. The
-    function will run faster with a smaller number of iterations.
-    """
+# Smooths a vector using an n-degree polynomial function
+#	y: data to be smoothed
+#  	x: include if y does not increment in whole numbers
+#	span: number between 0 and 1 specifying the span as a percentage of y
+#	degree: degree of polynomial to fit (note that 1=lowess and 2=loess)
+#	robust: if true, uses matlab's robust algorithm to remove outliers
+def py_smooth(y, x=None, span = 0.3, degree = 1, robust = False):
+    
+    print("Smoothing input...")
+    print(x)
+    print(y)
+
+    # Checks to make sure that the span is a valid number
+    if span <= 0 or span > 1: return -1
+    
+    span_len = int(span*len(y))
+    half_span_len = int(span_len/2)
+    i = 0
+    estimates = np.empty(len(y))
+    residuals = []
+    
+    # Sets x-values to default range if not specified
+    if x is None:
+        x = np.arange(len(y))
+    
+    # Main loop to smooth each point
+    for i in range(0, len(y)):
+        
+        # Determines span endpoints, with smaller spans at each end
+        min_span = max(i-half_span_len, 0)
+        max_span = min(i+half_span_len,len(y)-1)
+        max_distance = max(np.linalg.norm(x[i]-x[min_span]),
+                           np.linalg.norm(x[i]-x[max_span]))
+        
+        # Determines weights using scaled distances for each point
+        distances = [abs(float(x[j]-x[i])/max_distance) for j in range(min_span, max_span+1)]
+        weights = [tricube(z) for z in distances]
+        
+        # Subsets values and weights to span
+        x_span = [x[j] for j in range(min_span, max_span+1) if weights[j-min_span] != 0]
+        y_span = [y[j] for j in range(min_span, max_span+1) if weights[j-min_span] != 0]
+        weights_span = [w for w in weights if w != 0]
+
+        # Fits weighted least-squares regression to values in span
+        fit = np.polyfit(x_span, y_span, deg = degree, full = True, w = weights_span)
+        
+        # Records estimate at focal point
+        estimates[i] = fit[0][1] + (x[i])*fit[0][0]
+                
+        # Records the residuals for each point in the span
+        residuals.append(np.empty(len(x_span)))
+        for k in range(0, len(x_span)):
+            residuals[i][k] = y_span[k] - (fit[0][1] + (x[k]+min_span)*fit[0][0])
+        
+#        print("   Round " + str(i) + ": ")
+#        print("intercept: " + str(fit[0][1]))
+#        print("slope: " + str(fit[0][0]))
+#        print("estimate:" + str(estimates[i]))
+#        print("weights:" + str(weights))
+#        print("")
+
+    # If robust specified, we calculate weights a total of four more times
+    if robust:
+        i = 0
+        for i in range(0, len(y)):
+
+            print("i: " + str(i))
+            
+            # Determines span endpoints, with smaller spans at each end
+            min_span = max(i-half_span_len, 1)
+            #max_span = min(i+half_span_len,len(y)-1)
+            
+            # Calculates the MAD and robust weights
+            m = mad(residuals[i])
+            robust_weights = [biopython_bisquare(r, m) for r in residuals[i]]
+
+            print([biopython_bisquare(r, m) for r in residuals[i]])
+            
+            # Subsets estimates and weights to span
+            x_span = [x[j] for j in range(0, len(robust_weights)) if robust_weights[j] != 0]
+            y_span = [estimates[j] for j in range(0, len(robust_weights)) if robust_weights[j] != 0]
+            weights_span = [w for w in robust_weights if w != 0]
+
+            #print(str(len(y)) + ", " + str(i) + ", " + str(len(x_span)))
+            #print(str(residuals[i]))
+            #print(str(robust_weights))
+            
+            # Fits weighted least-squares regression using robust weights to values in span
+            fit = np.polyfit(x_span, y_span, deg = degree, full = True, w = weights_span)
+            
+            # Records estimate at focal point
+            estimates[i] = fit[0][1] + (x[i])*fit[0][0]
+            
+            # Records the residuals for each point in the span
+            for k in range(0, len(x_span)):
+                residuals[i][k] = y_span[k] - (fit[0][1] + (x[k]+min_span)*fit[0][0])
+            
+    # Returns estimates
+    return estimates
+
+# Tricube weight function, assuming x is a scaled distance
+def tricube(x): 
+    if x < 1: return (1-(x**3))**3
+    else: return 0
    
-    #print("x shape: " + str(x.shape) + ", y shape: " + str(y.shape))    
+# Bisquare weight function, given the median absolute deviation.
+# Removes observations that have a probability of being observed
+# of less than 0.0001 from smoothing calculations
+def bisquare(x, m): 
+    if x < 6: return (1-(x/(6*m))**2)**2 
+    else: return 0
 
-    # First ensures that the input arrays are properly formatted
-    if len(x) != len(y): return np.nan 
-    if len(x) == 0 or len(y) == 0: return np.nan
-    if isinstance(x, np.ndarray):
-        if [i > 1 for i in x.shape].count(True) > 1: return np.nan
-        else: x = np.reshape(x.flatten(), max(x.shape))
-    if isinstance(y, np.ndarray):
-        if [i > 1 for i in y.shape].count(True) > 1: return np.nan
-        else: y = np.reshape(y.flatten(), max(y.shape)) 
+# Biopython's bisquare implementation
+def biopython_bisquare(x, m):
+    y = np.clip(x/(6*m), -1, 1)
+    print("y: " + str(y) + ", y**2:" + str(y**2) + ", result: ")
+    return (1-(y**2))**2 + str
 
-    n = len(x)
-    r = int(np.ceil(f * n))
-    h = [np.sort(np.abs(x - x[i]))[r] for i in range(n)]
-    w = np.clip(np.abs((x[:, None] - x[None, :]) / h), 0.0, 1.0)
-    w = (1 - w ** 3) ** 3
-    yest = np.zeros(n)
-    delta = np.ones(n)
-    for iteration in range(iter):
-        for i in range(n):
-            weights = delta * w[:, i]
-            b = np.array([np.sum(weights * y), np.sum(weights * y * x)])
-            A = np.array([[np.sum(weights), np.sum(weights * x)],
-                          [np.sum(weights * x), np.sum(weights * x * x)]])
-            beta = scipy.linalg.solve(A, b)
-            yest[i] = beta[0] + beta[1] * x[i]
-        residuals = y - yest
-        s = np.median(np.abs(residuals))
-        delta = np.clip(residuals / (6.0 * s), -1, 1)
-        delta = (1 - delta ** 2) ** 2
 
-    return yest
+# Calculates the median absolute deviation of a residual array
+def mad(e): 
+    m = np.median(e)
+    return np.median([abs(x-m) for x in e])
 
 
 
@@ -208,7 +286,7 @@ def smooth(yy, xx):
     yy_normalized = np.zeros(xx.shape) + np.nan
     if np.sum(yy[k]) == 0:
         return yy_normalized
-    lowess_line = git_lowess(xx[k], yy[k], f=0.3, iter=5)
+    lowess_line = py_smooth(yy[k], xx[k], 0.3, robust=True)
     if np.sum(lowess_line) == 0:
         return yy_normalized
     yy_normalized[k] = xx[k] * yy[k] / lowess_line
@@ -237,7 +315,6 @@ def normalizeUsingAllControlsAndSave(config_params, outfolder, dataset, control_
     # Set all strains in control conditions with counts below the control count detection limit to NaN
     control_matrix[control_matrix < control_detection_limit] = np.nan
     # Compute the mean control profile
-    print control_matrix
     mean_control_profile = np.log( np.nanmean( control_matrix, axis=1 ))
     if get_verbosity(config_params) >= 2:
         print 'mean control profile:'
@@ -290,8 +367,6 @@ def deviations_globalmean(config_params, outfolder, lowess_dataset, mean_control
     return deviation_dataset
 
 def getAsymmetricSigmaForScipyMatrix(raw_mean_control_profile, dev_control_matrix, config_params):
-
-    # Sets up matrices used in lowess calls
     dev_control_matrix_tall = np.zeros((0, 1))
     repeated_raw_mean_control_profile = np.zeros((0, 1))
     raw_mean_control_profile = np.matrix(raw_mean_control_profile).transpose()
@@ -307,12 +382,8 @@ def getAsymmetricSigmaForScipyMatrix(raw_mean_control_profile, dev_control_matri
         if get_verbosity(config_params) >= 3:
             print dev_control_matrix_tall[pos],  dev_control_matrix_tall_squared[pos]
             print dev_control_matrix_tall.shape, dev_control_matrix_tall_squared.shape, pos.shape, scipy.nonzero(pos)[0].shape[0]
-
-    # Smooths above positive and negative matrices
-    #lowess[pos] = git_lowess(np.asarray(repeated_raw_mean_control_profile[pos].ravel().tolist()[0]), dev_control_matrix_tall_squared[pos], f=0.3, iter=1)
-    #lowess[neg] = git_lowess(np.asarray(repeated_raw_mean_control_profile[neg].ravel().tolist()[0]), dev_control_matrix_tall_squared[neg], f=0.3, iter=1)
-    lowess[pos] = np.array( mlab.smooth(repeated_raw_mean_control_profile[pos],  dev_control_matrix_tall_squared[pos] , 0.3, 'lowess')  ).transpose()[0]
-    lowess[neg] = np.array( mlab.smooth(repeated_raw_mean_control_profile[neg],  dev_control_matrix_tall_squared[neg] , 0.3, 'lowess')  ).transpose()[0]
+    lowess[pos] = py_smooth(dev_control_matrix_tall_squared[pos], repeated_raw_mean_control_profile[pos], 0.3)
+    lowess[neg] = py_smooth(dev_control_matrix_tall_squared[neg], repeated_raw_mean_control_profile[neg], 0.3)
     lowess_pos = np.zeros(raw_mean_control_profile.shape) + np.nan
     lowess_neg = np.zeros(raw_mean_control_profile.shape) + np.nan
     for i in range(raw_mean_control_profile.shape[0]):
@@ -321,18 +392,7 @@ def getAsymmetricSigmaForScipyMatrix(raw_mean_control_profile, dev_control_matri
                 lowess_pos[i] = lowess[j]
             else:
                 lowess_neg[i] = lowess[j]
-
-    # Smooths symmetric matrix, removing NaNs and non-well-behaved input    
-    formatted_symmetric_x = np.asarray(repeated_raw_mean_control_profile.ravel().tolist()[0])
-    formatted_symmetric_y = np.reshape(dev_control_matrix_tall.flatten(), -1)
-    lowess_symmetric = np.zeros(formatted_symmetric_x.shape) + np.nan
-    k = wellbehaved(formatted_symmetric_x) & wellbehaved(formatted_symmetric_y)
-    lowess_result = git_lowess(formatted_symmetric_x[k], formatted_symmetric_y[k], f=0.1, iter=1)
-    for i in range(len(lowess_symmetric)):
-        j = 0
-        if k[i]: 
-            lowess_symmetric[i] = lowess_result[j]
-            j += 1
+    lowess_symmetric = py_smooth(dev_control_matrix_tall, repeated_raw_mean_control_profile)
 
     return np.sqrt( lowess_neg ).real , np.sqrt( lowess_pos ).real, np.sqrt(lowess_symmetric[range(raw_mean_control_profile.shape[0])]).real
 
@@ -365,11 +425,9 @@ def scaleInteractions(config_params, outfolder, deviation_dataset, raw_dataset, 
         I = I[range(int( I.shape[0]*0.75) )] # median 75%
         sigma = np.std(deviation[k][I])
         sigma = np.zeros(mean_control_profile.shape) + sigma
-        total_sigma_neg = np.nanmax([sigma, lowess_neg.flatten()], axis = 0)
-        total_sigma_pos = np.nanmax([sigma, lowess_pos.flatten()], axis = 0)
+        total_sigma_neg = np.maximum(sigma, lowess_neg)
+        total_sigma_pos = np.maximum(sigma, lowess_pos)
         zscores = np.zeros(deviation.shape) + np.nan
-        total_sigma_neg = np.reshape(total_sigma_neg, (-1, 1))
-        total_sigma_pos = np.reshape(total_sigma_neg, (-1, 1))
         zscores[deviation < 0] = deviation[deviation < 0] / total_sigma_neg[deviation < 0]
         zscores[deviation > 0] = deviation[deviation > 0] / total_sigma_pos[deviation > 0]
         zscores[deviation == 0] = 0

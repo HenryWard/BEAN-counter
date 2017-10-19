@@ -19,7 +19,7 @@ import scipy
 import sys, os, gzip
 import jellyfish as jf
 import matplotlib
-matplotlib.use('Agg') # Force matplotlib to not use any Xwindows backend.
+matplotlib.use('Agg')  # Force matplotlib to not use any Xwindows backend.
 import matplotlib.pyplot as plt
 import itertools as it
 import cPickle
@@ -33,6 +33,9 @@ import compressed_file_opener as cfo
 import cg_file_tools as cg_file
 
 sys.path.append(os.path.join(barseq_path, 'lib/python2.7/site-packages'))
+
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn import datasets
 
 def read_sample_table(tab_filename):
 
@@ -161,7 +164,69 @@ def get_corrected_data_filename(output_folder):
 def get_corrected_data_info_filename(output_folder):
     return os.path.join(output_folder, 'batch_corrected_datasets_info.txt')
 
-def LDA_batch_normalization(dataset, sample_table, batch_col, output_folder, ncomps): # this is actually the batch normalization method
+# Performs LDA using scikit. Returns list with length equal to the number of
+# unique classes plus 1 containing matrices with components [0,1...n_classes]
+# removed
+def scikit_lda(small_x, full_x, classes, n_comps):
+
+    # Fits the LDA
+    lda = LinearDiscriminantAnalysis(n_components=n_comps)
+    lda.fit(small_x.transpose(), classes)
+
+    # Removes up to n_comps components one by one
+    mats = [full_x]
+    full_x = full_x.transpose()
+    for i in range(1, n_comps+1):
+        temp_scalings = lda.scalings_[:, 0:i]
+        norm_mat = full_x - np.matmul(full_x, np.matmul(temp_scalings, temp_scalings.transpose()))
+        mats.append(norm_mat.transpose())
+    #mats.append(np.matmul(full_x, np.matmul(lda.scalings_, lda.scalings_.transpose())))
+    return mats
+
+# def inner_python_lda(small_x, full_x, classes, n_comps):
+#
+#     # Gets boolean index variables
+#     X = small_x
+#     a = np.sum(np.absolute(small_x), axis=1)
+#     b = np.sum(np.absolute(small_x), axis=0)
+#     X = X[np.ix_(a > 0, b > 0)]
+#
+#     # Indexes classes and initializes scatter vectors
+#     classes = classes[b > 0]
+#     class_labels = np.unique(classes)
+#     dataMean = np.nanmean(X, 0)     # Column means
+#     Sw = np.zeros(X.shape[1])       # Empty within-class scatter vector
+#     Sb = np.zeros(X.shape[1])       # Empty between-class scatter vector
+#
+#     # Computes scatter vectors for all classes
+#     for i in range(len(class_labels)):
+#         ind = np.where(classes == class_labels[i])[0]  # Finds all columns for a given class
+#         if ind.size == 0:
+#             continue
+#
+#         classMean = np.nanmean(X[ind, :])   # Take mean of all columns in the class AND ALSO CHECK THIS OUT LATER!!!
+#         Sw = Sw + np.cov(X[ind, :], bias=1, rowvar=0)      # Find covariance of all columns in the class
+#         Sb = Sb + ind.size*np.transpose(classMean - dataMean)*(classMean - dataMean)    # CHECK THIS OUT LATER!!!
+#         # FOR REAL!!!
+#
+#     # Gets matrix to decompose, and decomposes it
+#     eig_mat = np.linalg.pinv(Sw)*Sb
+#     U, D, V = np.linalg.svd(eig_mat)
+#     #a = np.diag(D)/max(np.diag(D))
+#     stopind = n_comps
+#
+#     N = V[:, 0:stopind]
+#     Xnorm = full_x
+#     a = np.sum(np.absolute(Xnorm), axis=1)
+#     b = np.sum(np.absolute(Xnorm), axis=0)
+#
+#     #Xnorm[np.ix_(a > 0, b > 0)] = Xnorm[np.ix_(a > 0, b > 0)] - Xnorm[np.ix_(a > 0, b > 0)] * N * np.transpose(N)
+#     Xnorm = Xnorm - np.matmul(Xnorm, np.matmul(N, np.transpose(N)))
+#     Xnorm = np.transpose(Xnorm)
+#
+#     return Xnorm
+
+def LDA_batch_normalization(dataset, sample_table, batch_col, output_folder, n_comps): # this is actually the batch normalization method
    
     tmp_output_folder = os.path.join(output_folder, 'tmp')
 
@@ -188,39 +253,27 @@ def LDA_batch_normalization(dataset, sample_table, batch_col, output_folder, nco
     matrix[matrix_nan_inds] = 0
     matrix[matrix_inf_inds] = 0
 
-    # Save both the small matrix (for determining the components to remove) and the 
-    # full matrix for the matlab script
-    filtered_matrix_tmp_filename = os.path.join(tmp_output_folder, 'nonreplicating_matrix.txt')
-    full_matrix_tmp_filename = os.path.join(tmp_output_folder, 'full_matrix.txt')
-    
-    np.savetxt(filtered_matrix_tmp_filename, filtered_matrix)
-    np.savetxt(full_matrix_tmp_filename, matrix)
-
     # Map the batch to integers for matlab, and write out to a file so matlab can read
     # Note that yes, the batch_classes should match up with the filtered matrix, not
     # the full matrix
-    batch_classes = get_batch_classes(dataset = [barcodes, filtered_conditions, filtered_matrix], sample_table = sample_table, batch_col = batch_col)
-    class_tmp_filename = os.path.join(tmp_output_folder, 'classes.txt')
-    writeList(batch_classes, class_tmp_filename)
-   
-    output_tmp_filename = os.path.join(tmp_output_folder, 'full_matrix_lda_normalized.txt')
-    runLDAMatlabFunc(filtered_matrix_filename = filtered_matrix_tmp_filename, \
-            matrix_filename = full_matrix_tmp_filename, \
-            class_filename = class_tmp_filename, \
-            ncomps = ncomps, \
-            output_filename = output_tmp_filename)
-    # The X norm that is returned is the full matrix. In the future, we could add in
-    # returning the components to remove so they can be visualized or applied to other
-    # one-off datasets
-    Xnorm =  scipy.genfromtxt(output_tmp_filename)
+    batch_classes = get_batch_classes(
+        dataset=[barcodes, filtered_conditions, filtered_matrix], sample_table=sample_table, batch_col=batch_col)
 
-    ## Dump the dataset out!
-    #output_filename = os.path.join(mtag_effect_folder, 'scaleddeviation_full_mtag_lda_{}.dump.gz'.format(ncomps))
-    #of = gzip.open(output_filename, 'wb')
-    #cPickle.dump([barcodes, conditions, Xnorm], of)
-    #of.close()
+    # Checks number of classes and limits ncomps
+    a = [x > 0 for x in np.sum(np.absolute(filtered_matrix), axis=0)]
+    classes = np.asarray([batch_classes[i] for i in range(len(batch_classes)) if a[i]])
+    n_samples = filtered_matrix.shape[0]
+    n_classes = len(np.unique(classes))
+    if n_samples == n_classes:
+        print "ERROR: The number of samples is equal to the number of classes. Exiting"
+    if n_classes <= n_comps:
+        print "Fewer classes, " + str(n_classes) + ", than components. Setting components to " + str(n_classes-1)
+        n_comps = n_classes-1
 
-    return [barcodes, conditions, Xnorm]
+    # Runs scikit LDA
+    Xnorm = scikit_lda(filtered_matrix, matrix, batch_classes, n_comps)
+
+    return [barcodes, conditions, Xnorm, n_comps]
 
 def runLDAMatlabFunc(filtered_matrix_filename, matrix_filename, class_filename, ncomps, output_filename):
     #print "cd /project/csbio/raamesh/projects/smallprojects/coveringYeastGIArray/After330screens/data/Jeff/nameddrugs/; matlab -nodisplay -nodesktop -nojvm -nosplash -r 'multi_class_lda_py('\\'%s\\'', '\\'%s\\'', %f, '\\'%s\\''); exit' > /dev/null;" % (matrixfilename, classfilename, perc, outputfilename)
@@ -265,15 +318,21 @@ def main(dataset, sample_table, batch_column, nondup_col_list, max_comps, output
 
     # Perform the batch effect normalization (LDA), using a matlab callout
     # Remove 0 components up to and including the max number of comps specified by the user
+    # final_dataset = [barcodes, filtered_conditions, filtered_matrix, conditions, matrix]
+    # for i in range(max_comps_remove + 1):
+    #     if verbosity >= 1:
+    #         print "Performing batch effect correction and removing {} components".format(i)
+    #     corrected_dataset = LDA_batch_normalization(final_dataset, sample_table, batch_column, output_folder, i)
+    #     all_mats.append(corrected_dataset[2])
+
+    # UPDATED LDA IMPLEMENTATION
     final_dataset = [barcodes, filtered_conditions, filtered_matrix, conditions, matrix]
-    for i in range(max_comps_remove + 1):
-        if verbosity >= 1:
-            print "Performing batch effect correction and removing {} components".format(i)
-        corrected_dataset = LDA_batch_normalization(final_dataset, sample_table, batch_column, output_folder, i)
-        all_mats.append(corrected_dataset[2])
+    corrected_dataset = LDA_batch_normalization(final_dataset, sample_table, batch_column, output_folder, max_comps_remove)
+    all_mats = corrected_dataset[2]
+    n_comps = corrected_dataset[3]
 
     # Turn the final dataset into a numpy array!
-    components_removed = np.array(list(range(max_comps_remove + 1)))
+    components_removed = np.array(list(range(n_comps+1)))
     all_mats = [components_removed, barcodes, conditions, np.array(all_mats)]
 
     # Write out the 3-d array with different LDA components removed
@@ -297,7 +356,7 @@ if __name__ == '__main__':
     parser.add_argument('nondup_columns', help = 'Comma delimited. The columns that contain condition identifiers that should not be duplicated within the same batch.')
     parser.add_argument('max_components', help = 'The maximum number of LDA components to remove.')
     parser.add_argument('output_folder', help = 'The folder to which results are exported.')
-    parser.add_argument('-v', '--verbosity', help = 'The level of verbosity printed to stdout. Ranges from 0 to 3, 1 is default.')
+    parser.add_argument('-v', '--verbosity', help = 'The level of verbosity printed to stdout. Ranges from 0 to 3, 1 is default.', default="1")
 
     args = parser.parse_args()
 

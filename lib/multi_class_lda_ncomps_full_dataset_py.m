@@ -15,7 +15,7 @@ X = smallX;
 a = sum(abs(X), 1);
 b = sum(abs(X), 2);
 
-X = X(b>0, a> 0);
+X = X(b>0, a>0);
 X(X==0) = normrnd(nanmean(X(:)), nanstd(X(:)), length(find(X==0)), 1);
 
 % size(X)
@@ -35,18 +35,18 @@ for i = 1:length(class_labels)
         continue;
     end
     
-    classMean = nanmean(X(ind, :));
-    Sw = Sw + cov(X(ind, :), 1);
-    Sb = Sb + numel(ind)*(classMean - dataMean)'*(classMean - dataMean);
+    classMean = nanmean(X(ind, :));	% 1) Mean vector for the given class
+    Sw = Sw + cov(X(ind, :), 1);	% 2.1) Within-class scatter matrix
+    Sb = Sb + numel(ind)*(classMean - dataMean)'*(classMean - dataMean);	% 2.2) Between-class scatter matrix
 end
 
-eig_mat = pinv(Sw)*Sb;
+eig_mat = pinv(Sw)*Sb;  % 3) Matrix that we will decompose into eigenvectors and eigenvalues
 
 
 [U, D, V] = svd(eig_mat);
 a = diag(D)/max(diag(D));
 %  stopind = max(find(a>=perc));
-stopind = ncomps;
+stopind = ncomps;	% 4) Index corresponding to the number of components to remove
 
 N = V(:, 1:stopind);
 
@@ -57,6 +57,6 @@ b = sum(abs(Xnorm), 2);
 
 % Note that components will not be removed from "badly behaving" rows/columns,
 % aka rows and columns that have no interactions whatsoever
-Xnorm(b>0, a>0) = Xnorm(b>0, a>0) - Xnorm(b>0, a>0)*N*N';
+Xnorm(b>0, a>0) = Xnorm(b>0, a>0) - Xnorm(b>0, a>0)*N*N';	% 5) Transforms input matrix onto subspace
 Xnorm = Xnorm';
 save(outputfilename, 'Xnorm', '-ASCII');
